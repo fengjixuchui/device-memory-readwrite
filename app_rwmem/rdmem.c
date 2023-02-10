@@ -4,6 +4,7 @@
  * Part of the DEVMEM-RW opensource project - a simple 
  * utility to read / write [I/O] memory and display it.
  * This is the 'read' functionality app.
+ * We assume the corresponding device driver is loaded when you run this...
  *
  * Project home: 
  * https://github.com/kaiwan/device-memory-readwrite
@@ -11,7 +12,7 @@
  * Pl see detailed overview and usage PDF doc here:
  * https://github.com/kaiwan/device-memory-readwrite/blob/master/Devmem_HOWTO.pdf
  * 
- * License: GPL v2.
+ * License: MIT
  * Author: Kaiwan N Billimoria
  *         kaiwanTECH.
  */
@@ -39,7 +40,11 @@ offset -or- address : required parameter:\n\
  start offset or address to read memory from (HEX).\n\
 \n\
 len: optional parameter:\n\
- length : number of items to read. Default = 4 bytes (HEX)\n" " Restrictions: length must be in the range [%d-%d] and\n" " a power of 2 (if not, it will be auto rounded-up to the next ^2).\n", name, MIN_LEN, MAX_LEN);
+ length : number of items to read. Default = 4 bytes\n"
+ " Restrictions: length must be in the range [%d-%d] and\n"
+ " a power of 2 (if not, it will be auto rounded-up to the next ^2).\n"
+ "\n%s\n",
+	name, MIN_LEN, MAX_LEN, usage_warning_msg);
 }
 
 int main(int argc, char **argv)
@@ -94,6 +99,7 @@ int main(int argc, char **argv)
 		st_rdm.addr = strtoull(argv[1], 0, 16);
 	}
 
+	// check that the conversion via strtoull()'s fine
 	if ((errno == ERANGE
 	     && (st_rdm.addr == ULONG_MAX || (long long int)st_rdm.addr == LLONG_MIN))
 	    || (errno != 0 && st_rdm.addr == 0)) {
@@ -109,30 +115,37 @@ int main(int argc, char **argv)
 	MSG("1 offset? %s; st_rdm.addr=%p\n",
 	    (st_rdm.flag == USE_IOBASE ? "yes" : "no"), (void *)st_rdm.addr);
 
-	if (st_rdm.flag != USE_IOBASE && is_user_address(st_rdm.addr)) {
-		if (uaddr_valid(st_rdm.addr) == -1) {
-			fprintf(stderr,
-				"%s: the (usermode virtual) address passed (%p) seems to be invalid. Aborting...\n",
+	if (st_rdm.flag != USE_IOBASE) { // we've been passed an absolute (user/kernel virtual) address
+		/* Let's verify it before attempting to use it in the kernel driver;
+		 * if it's a userspace addr, check it's validity, else we simply assume it's a valid kernel va
+		 */
+		if (is_user_address(st_rdm.addr)) {
+			if (uaddr_valid(st_rdm.addr) == -1) {
+				fprintf(stderr,
+			"%s: the (usermode virtual) address passed (%p) seems to be invalid. Aborting...\n",
 				argv[0], (void *)st_rdm.addr);
-			close(fd);
-			exit(1);
-		}
+				close(fd);
+				exit(1);
+			}
+			MSG("addr is a valid user-mode addr\n");
+		} else
+			MSG("addr is Not a user-mode addr\n");
 	}
 	MSG("2 offset? %s; st_rdm.addr=%p\n",
 	    (st_rdm.flag == USE_IOBASE ? "yes" : "no"), (void *)st_rdm.addr);
 
 	/* Length is number of "items" to read of size "date_type" each.
 	   Restrictions:
-	   - should be in the range [MIN_LEN to MAX_LEN] [curr 4 - 131072]
-	   - should be a power of 2. If not, it will be rounded up to the next power of 2.
+	   - should be in the range [MIN_LEN to MAX_LEN] [curr 4 - 16M]
+	//	   - should be a power of 2. If not, it will be rounded up to the next power of 2.
 	 */
-	st_rdm.len = sizeof(int);
+	st_rdm.len = sizeof(unsigned int);
 	errno = 0;
 	if (argc == 3) {	// either: (addr and length specified) OR ('-o' and offset) specified
 		if (st_rdm.flag != USE_IOBASE)	// '-o' NOT passed and length specified
-			st_rdm.len = strtol(argv[2], 0, 16);
+			st_rdm.len = strtol(argv[2], 0, 0);
 	} else if (argc == 4) {	// -o passed and length specified
-		st_rdm.len = strtol(argv[3], 0, 16);
+		st_rdm.len = strtol(argv[3], 0, 0);
 	}
 	if ((errno == ERANGE
 	     && (st_rdm.addr == ULONG_MAX || (long long int)st_rdm.addr == LLONG_MIN))
@@ -145,7 +158,7 @@ int main(int argc, char **argv)
 		close(fd);
 		exit(1);
 	}
-	st_rdm.len = roundup_powerof2(st_rdm.len);
+//	st_rdm.len = roundup_powerof2(st_rdm.len);
 	MSG("final: len=%d\n", st_rdm.len);
 
 	st_rdm.buf = (unsigned char *)calloc(st_rdm.len, sizeof(unsigned char));
@@ -165,7 +178,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	//void hex_dump(char *data, int size, char *caption, int verbose)
+	//void hex_dump(char *data, unsigned int size, char *caption, int verbose)
 	hex_dump(st_rdm.buf, st_rdm.len, "MemDump", 0);
 	free(st_rdm.buf);
 	close(fd);

@@ -2,10 +2,10 @@
  * common.h
  *
  * Project home: 
- * http://code.google.com/p/device-memory-readwrite/
+ * http://github.com/kaiwan/device-memory-readwrite/
  *
- * Pl see detailed usage Wiki page here:
- * http://code.google.com/p/device-memory-readwrite/wiki/UsageWithExamples
+ * Pl see detailed usage doc here:
+ * https://github.com/kaiwan/device-memory-readwrite/blob/master/Devmem_HOWTO.pdf
  *
  * For rdmem/wrmem utility.
  */
@@ -19,24 +19,13 @@
 #define APPNAME		"rdm_wrm_app"
 #define	DRVNAME		"devmem_rw"
 
-#ifdef __KERNEL__
+#ifndef __KERNEL__
 #ifdef DEBUG_PRINT
-#define MSG(string, args...)				\
-	pr_info("[%s]%s:%d: " string,			\
-		DRVNAME, __FUNCTION__, __LINE__, ##args)
-#define QP MSG("\n");
-#else
-#define MSG(string, args...)
-#define QP
-#endif
-#else				// userspace
-#ifdef DEBUG_PRINT
-#define MSG(string, args...) \
+ #define MSG(string, args...) \
 	fprintf (stderr, "[%s]%s:%d: " string,		\
 		APPNAME, __FUNCTION__, __LINE__, ##args)
 #else
-#define MSG(string, args...)
-#define QP
+ #define MSG(string, args...)
 #endif
 #endif
 
@@ -50,7 +39,7 @@
 #endif
 
 #define MIN_LEN 		4
-#define MAX_LEN			128*1024 // 128Kb (arbit)..
+#define MAX_LEN			16*1024*1024
 
 #define RW_MINOR_START     0
 #define RW_COUNT           1
@@ -66,7 +55,7 @@
 typedef struct _ST_RDM {
 	volatile unsigned long addr;
 	unsigned char *buf;
-	int len;
+	unsigned int len; // [0-4G] range
 	int flag;
 } ST_RDM, *PST_RDM;
 
@@ -78,75 +67,80 @@ typedef struct _ST_WRM {
 
 #ifdef __KERNEL__
 /*------------------------ PRINT_CTX ---------------------------------*/
-/* 
- An interesting way to print the context info:
- If USE_FTRACE_PRINT is On, it implies we'll use trace_printk(), else the vanilla
- printk(). 
- If we are using trace_printk(), we will automatically get output in the ftrace 
- latency format (see below):
-
- * The Ftrace 'latency-format' :
-                       _-----=> irqs-off          [d]
-                      / _----=> need-resched      [N]
-                     | / _---=> hardirq/softirq   [H|h|s]   H=>both h && s
-                     || / _--=> preempt-depth     [#]
-                     ||| /                      
- CPU  TASK/PID       ||||  DURATION                  FUNCTION CALLS 
- |     |    |        ||||   |   |                     |   |   |   | 
-
- However, if we're _not_ using ftrace trace_printk(), then we'll _emulate_ the same
- with the printk() !
- (Of course, without the 'Duration' and 'Function Calls' fields).
+/*
+ * An interesting way to print the context info; we mimic the kernel
+ * Ftrace 'latency-format' :
+ *                       _-----=> irqs-off          [d]
+ *                      / _----=> need-resched      [N]
+ *                     | / _---=> hardirq/softirq   [H|h|s] [1]
+ *                     || / _--=> preempt-depth     [#]
+ *                     ||| /
+ * CPU  TASK/PID       ||||  DURATION                  FUNCTION CALLS
+ * |     |    |        ||||   |   |                     |   |   |   |
+ *
+ * [1] 'h' = hard irq is running ; 'H' = hard irq occurred inside a softirq]
+ *
+ * Sample output (via 'normal' printk method; in this comment, we make / * into \* ...)
+ *  CPU)  task_name:PID  | irqs,need-resched,hard/softirq,preempt-depth  \* func_name() *\
+ *  001)  rdwr_drv_secret -4857   |  ...0   \* read_miscdrv_rdwr() *\
+ *
+ * (of course, above, we don't display the 'Duration' and 'Function Calls' fields)
  */
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 
-#ifndef USE_FTRACE_PRINT	// 'normal' printk(), lets emulate ftrace latency format
-#define PRINT_CTX() do {                                                                     \
-	char sep='|', intr='.';                                                              \
-	                                                                                     \
-   if (in_interrupt()) {                                                                     \
-      if (in_irq() && in_softirq())                                                          \
-	    intr='H';                                                                        \
-	  else if (in_irq())                                                                 \
-	    intr='h';                                                                        \
-	  else if (in_softirq())                                                             \
-	    intr='s';                                                                        \
-	}                                                                                    \
-   else                                                                                      \
-	intr='.';                                                                            \
-	                                                                                     \
-	MSG(                                                                            \
-	"PRINT_CTX:: [%03d]%c%s%c:%d   %c "                                                  \
-	"%c%c%c%u "                                                                          \
-	"\n"                                                                                 \
-	, smp_processor_id(),                                                                \
-    (!current->mm?'[':' '), current->comm, (!current->mm?']':' '), current->pid, sep,        \
-	(irqs_disabled()?'d':'.'),                                                           \
-	(need_resched()?'N':'.'),                                                            \
-	intr,                                                                                \
-	(preempt_count() && 0xff)                                                            \
-	);                                                                                   \
+#define PRINT_CTX() do {                                                      \
+	int PRINTCTX_SHOWHDR = 0;                                                 \
+	char intr = '.';                                                          \
+	if (!in_task()) {                                                         \
+		if (in_irq() && in_softirq())                                         \
+			intr = 'H'; /* hardirq occurred inside a softirq */               \
+		else if (in_irq())                                                    \
+			intr = 'h'; /* hardirq is running */                              \
+		else if (in_softirq())                                                \
+			intr = 's';                                                       \
+	}                                                                         \
+	else                                                                      \
+		intr = '.';                                                           \
+										                                      \
+	if (PRINTCTX_SHOWHDR == 1)                                                \
+		pr_debug("CPU)  task_name:PID  | irqs,need-resched,hard/softirq,preempt-depth  /* func_name() */\n"); \
+	pr_debug(                                                                    \
+	"%03d) %c%s%c:%d   |  "                                                      \
+	"%c%c%c%u   "                                                                \
+	"/* %s() */\n"                                                               \
+	, raw_smp_processor_id(),                                                    \
+	(!current->mm?'[':' '), current->comm, (!current->mm?']':' '), current->pid, \
+	(irqs_disabled()?'d':'.'),                                                   \
+	(need_resched()?'N':'.'),                                                    \
+	intr,                                                                        \
+	(preempt_count() && 0xff),                                                   \
+	__func__                                                                     \
+	);                                                                           \
 } while (0)
-#else				// using ftrace trace_prink() internally
-#define PRINT_CTX() do {                                                                          \
-	MSG("PRINT_CTX:: [cpu %02d]%s:%d\n", smp_processor_id(), __func__, current->pid);         \
-	if (!in_interrupt()) {                                                                    \
-  		MSG(" in process context:%c%s%c:%d\n",                                            \
-		    (!current->mm?'[':' '), current->comm, (!current->mm?']':' '), current->pid); \
-	} else {                                                                                  \
-        MSG(" in interrupt context: in_interrupt:%3s. in_irq:%3s. in_softirq:%3s. "               \
-		"in_serving_softirq:%3s. preempt_count=0x%x\n",                                   \
-          (in_interrupt()?"yes":"no"), (in_irq()?"yes":"no"), (in_softirq()?"yes":"no"),          \
-          (in_serving_softirq()?"yes":"no"), (preempt_count() && 0xff));                          \
-	}                                                                                         \
-} while (0)
-#endif
 #endif
 
+/*
+ * Interesting:
+ * Above, I had to change the smp_processor_id() to raw_smp_processor_id(); else,
+ * on a DEBUG kernel (configured with many debug config options), the foll warnings
+ * would ensue:
+Oct 04 12:19:53 dbg-LKD kernel: BUG: using smp_processor_id() in preemptible [00000000] code: rdmem/12133
+Oct 04 12:19:53 dbg-LKD kernel: caller is debug_smp_processor_id+0x17/0x20
+Oct 04 12:19:53 dbg-LKD kernel: CPU: 0 PID: 12133 Comm: rdmem Tainted: G      D    O      5.10.60-dbg01 #1
+Oct 04 12:19:53 dbg-LKD kernel: Hardware name: innotek GmbH VirtualBox/VirtualBox, BIOS VirtualBox 12/01/2006
+Oct 04 12:19:53 dbg-LKD kernel: Call Trace:
+Oct 04 12:19:53 dbg-LKD kernel:  dump_stack+0xbd/0xfa
+...
+ * This is caught due to the fact that, on a debug kernel, when the kernel config
+ * CONFIG_DEBUG_PREEMPT is enabled, it catches the possibility that functions
+ * like smp_processor_id() are called in an atomic context where sleeping / preemption
+ * is disallowed! With the 'raw' version it works without issues (just as Ftrace does).
+ */
+
+/*------------------ Usermode functions--------------------------------*/
 #ifndef __KERNEL__
 #include <assert.h>
-/*------------------Functions---------------------------------*/
 
 #define NON_FATAL    0
 
@@ -244,7 +238,7 @@ int uaddr_valid(volatile unsigned long addr)
 
 	if (pipe(fd) == -1) {
 		perror("pipe");
-		return -1;
+		return -2;
 	}
 	if (write(fd[1], (void *)addr, sizeof(unsigned long)) == -1) {
 		//printf("errno=%d\n", errno);
@@ -258,91 +252,47 @@ int uaddr_valid(volatile unsigned long addr)
 	return 0;
 }
 
-#include <mntent.h>
-char *find_debugfs_mountpt(void)
-{
-	/* Ref:
-	 * http://stackoverflow.com/questions/9280759/linux-function-to-get-mount-points
-	 */
-	struct mntent *ent;
-	FILE *fp;
-	char *ret = NULL;
-
-	fp = setmntent("/proc/mounts", "r");
-	if (NULL == fp) {
-		perror("setmntent");
-		exit(1);
-	}
-	while (NULL != (ent = getmntent(fp))) {
-		char *s1 = ent->mnt_fsname;
-		if (0 == strncmp(s1, "debugfs", 7)) {
-			ret = ent->mnt_dir;
-			break;
-		}
-	}
-	endmntent(fp);
-	return ret;
-}
-
 /*
- * debugfs_get_page_offset_val()
- *
- * @outval : the value-result parameter (pass-by-ref) that will hold the 
- *           result value
- *
- * Query the 'devmem_rw' debugfs "file" (this has been setup by the devmem_rw
- * driver on init..).
- * Thus it's now arch and kernel ver independent!
- * Of course, implies DEBUGFS is enabled within the kernel (usually the case).
+ * Using the value PAGE_OFFSET to determine the start of kernel VA is ONLY valid
+ * on 32-bit... On 64-bit, the kernel VAS can begin before PAGE_OFFSET (use the
+ * procmap util to verify this).
+ * So, let's base this routine on /proc/pid/maps; take the highest valid UVA there
+ * and check against it...
+ * Ret: 1 => it is a (seemingly) valid user addr
+ *      0 => it's not a valid user addr
+ *     -1 => this routine failed
  */
-int debugfs_get_page_offset_val(unsigned long long *outval)
+int is_user_address(volatile unsigned long long addr)
 {
-	int fd, MAX2READ = 16;
-	char *debugfs_mnt = find_debugfs_mountpt();
-	char *dbgfs_file = malloc(PATH_MAX);
-	char buf[MAX2READ + 1];
+	// get the high uva
+	char *cmd = "head -n -1 /proc/self/maps|tail -n1|awk '{print $1}'|cut -d'-' -f2";
+	FILE *fp;
+#define SZ2  20
+	char res[SZ2];
+	unsigned long long high_uva;
 
-	if (!debugfs_mnt) {
-		fprintf(stderr, "%s: fetching debugfs mount point failed, aborting...",
-			__func__);
-		free(dbgfs_file);
+	memset(res, 0, SZ2);
+	fp = popen(cmd, "r");
+	if (!fp) {
+		WARN("popen failed\n");
 		return -1;
 	}
-	assert(dbgfs_file);
-	snprintf(dbgfs_file, PATH_MAX, "%s/%s/get_page_offset", debugfs_mnt,
-		 DRVNAME);
-	MSG("dbgfs_file: %s\n", dbgfs_file);
-
-	if ((fd = open(dbgfs_file, O_RDONLY)) == -1) {
-		WARN("rdmem: open dbgfs_file");
-		free(dbgfs_file);
+	if (!fgets(res, SZ2-1, fp)) {
+		WARN("fgets failed\n");
+		pclose(fp);
 		return -1;
 	}
-	memset(buf, 0, MAX2READ + 1);
-	if (read(fd, buf, MAX2READ) == -1) {
-		perror("rdmem: read dbgfs_file");
-		close(fd);
-		free(dbgfs_file);
+	pclose(fp);
+	MSG("res = %s\n", res);
+
+	if (res[0] == '\0')
 		return -1;
-	}
-	close(fd);
-
-	*outval = strtoull(buf, 0, 16);
-
-	free(dbgfs_file);
-	return 0;
-}
-
-int is_user_address(volatile unsigned long addr)
-{
-	unsigned long long page_offset;
-	int stat = debugfs_get_page_offset_val(&page_offset);
-	assert(stat >= 0);
-	//MSG("page_offset = 0x%16llx\n", page_offset);
-
-	if (addr < page_offset)
+	high_uva = strtoull(res, 0, 16);
+	MSG("high_uva = 0x%016llx, addr=0x%016llx\n", high_uva, addr);
+	if (addr <= high_uva)
 		return 1;
-	return 0;
+	else
+		return 0;
 }
 
 /* 
@@ -368,9 +318,9 @@ All rights rest with original author(s).----------------------
 
 Added a 'verbose' parameter..(kaiwan).
 */
-void hex_dump(unsigned char *data, int size, char *caption, int verbose)
+void hex_dump(unsigned char *data, unsigned int size, char *caption, int verbose)
 {
-	int i;			// index in data...
+	unsigned int i;		// index in data...
 	int j;			// index in line...
 	char temp[10];
 	char buffer[128];
@@ -387,7 +337,7 @@ void hex_dump(unsigned char *data, int size, char *caption, int verbose)
 	    ("        +0          +4          +8          +c            0   4   8   c   \n");
 
 	// Hex portion of the line is 8 (the padding) + 3 * 16 = 52 chars long
-	// We add another four bytes padding and place the ASCII version...
+	// We add another four bytes padding and place the corresponding ASCII chars...
 	ascii = buffer + 58;
 	memset(buffer, ' ', 58 + 16);
 	buffer[58 + 16] = '\n';
@@ -402,7 +352,8 @@ void hex_dump(unsigned char *data, int size, char *caption, int verbose)
 			printf("%s", buffer);
 			memset(buffer, ' ', 58 + 16);
 
-			sprintf(temp, "+%04x", i);
+			sprintf(temp, "+%04u", i);
+			//sprintf(temp, "+%04x", i);
 			memcpy(buffer, temp, 5);
 
 			j = 0;
@@ -410,7 +361,7 @@ void hex_dump(unsigned char *data, int size, char *caption, int verbose)
 
 		sprintf(temp, "%02x", 0xff & data[i]);
 		memcpy(buffer + 8 + (j * 3), temp, 2);
-		if ((data[i] > 31) && (data[i] < 127))
+		if ((data[i] > 31) && (data[i] < 127)) // valid ASCII char (space to '~')
 			ascii[j] = data[i];
 		else
 			ascii[j] = '.';
@@ -419,6 +370,9 @@ void hex_dump(unsigned char *data, int size, char *caption, int verbose)
 	if (j != 0)
 		printf("%s", buffer);
 }
-#endif
 
+const char usage_warning_msg[] = "NOTE: You MUST realize that providing an invalid address, or \
+even, a valid address that's within a sparse (empty) region of virtual address space \
+WILL cause bugs. Be warned!";
+#endif
 #endif

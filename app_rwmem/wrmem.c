@@ -4,6 +4,7 @@
  * Part of the DEVMEM-RW opensource project - a simple 
  * utility to read / write [I/O] memory and display it.
  * This is the 'write' functionality app.
+ * We assume the corresponding device driver is loaded when you run this...
  *
  * Project home: 
  * https://github.com/kaiwan/device-memory-readwrite
@@ -11,9 +12,8 @@
  * Pl see detailed overview and usage PDF doc here:
  * https://github.com/kaiwan/device-memory-readwrite/blob/master/Devmem_HOWTO.pdf
  * 
- * License: GPL v2.
- * Author: Kaiwan N Billimoria
- *         kaiwanTECH.
+ * License: Dual MIT/GPL
+ * Author: (c) Kaiwan N Billimoria, kaiwanTECH
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,7 +55,8 @@ int main(int argc, char **argv)
 " memory offset or address to write to (HEX).\n"
 "\n"
 "value: required parameter:\n"
-" data to write to above address/offset (4 bytes) (HEX).\n", argv[0]);
+" data to write to above address/offset (4 bytes) (HEX).\n"
+ "\n%s\n", argv[0], usage_warning_msg);
 		exit(1);
 	}
 
@@ -96,13 +97,18 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	if (is_user_address(st_wrm.addr)) {
-		if (uaddr_valid(st_wrm.addr) == -1) {
-			fprintf(stderr,
+	if (st_wrm.flag != USE_IOBASE) { // we've been passed an absolute (user/kernel virtual) address
+		/* Let's verify it before attempting to use it in the kernel driver;
+		 * if it's a userspace addr, check it's validity, else we simply assume it's a valid kernel va
+		 */
+		if (is_user_address(st_wrm.addr)) { 
+			if (uaddr_valid(st_wrm.addr) == -1) {
+				fprintf(stderr,
 				"%s: the (usermode virtual) address passed (%p) seems to be invalid. Aborting...\n",
 				argv[0], (void *)st_wrm.addr);
-			close(fd);
-			exit(1);
+				close(fd);
+				exit(1);
+			}
 		}
 	}
 
