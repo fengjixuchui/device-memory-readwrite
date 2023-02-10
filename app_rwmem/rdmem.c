@@ -39,12 +39,12 @@ Usage: %s [-o] <address/offset> [len]\n\
 offset -or- address : required parameter:\n\
  start offset or address to read memory from (HEX).\n\
 \n\
-len: optional parameter:\n\
- length : number of items to read. Default = 4 bytes\n"
- " Restrictions: length must be in the range [%d-%d] and\n"
- " a power of 2 (if not, it will be auto rounded-up to the next ^2).\n"
+len (length): optional parameter:\n\
+ Number of items to read. Default = 4 bytes\n"
+ " Must be in the range [%d-%d] bytes.\n"
+ "\n%s\n"
  "\n%s\n",
-	name, MIN_LEN, MAX_LEN, usage_warning_msg);
+	name, MIN_LEN, MAX_LEN, usage_warning_msg, rdwrmem_tips_msg);
 }
 
 int main(int argc, char **argv)
@@ -64,6 +64,10 @@ int main(int argc, char **argv)
 			argv[0]);
 		exit(1);
 	}
+#ifdef DEBUG
+	// to allow testing of rdmem / wrmem for usermode virtual addresses (uva's)
+	memtest();
+#endif
 	if (argc < 2) {
 		usage(argv[0]);
 		exit(1);
@@ -122,8 +126,9 @@ int main(int argc, char **argv)
 		if (is_user_address(st_rdm.addr)) {
 			if (uaddr_valid(st_rdm.addr) == -1) {
 				fprintf(stderr,
-			"%s: the (usermode virtual) address passed (%p) seems to be invalid. Aborting...\n",
-				argv[0], (void *)st_rdm.addr);
+			"%s: the (usermode virtual) address passed (%p) seems to be invalid. Aborting...\n"
+			"%s\n",
+				argv[0], (void *)st_rdm.addr, rdwrmem_tips_msg);
 				close(fd);
 				exit(1);
 			}
@@ -159,7 +164,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 //	st_rdm.len = roundup_powerof2(st_rdm.len);
-	MSG("final: len=%d\n", st_rdm.len);
+	MSG("final: len=%u\n", st_rdm.len);
 
 	st_rdm.buf = (unsigned char *)calloc(st_rdm.len, sizeof(unsigned char));
 	if (!st_rdm.buf) {
@@ -168,8 +173,9 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	MSG("addr: %p buf=%p len=0x%x flag=%d\n",
-	    (void *)st_rdm.addr, st_rdm.buf, (unsigned int)st_rdm.len,
+	MSG("addr: %p buf=%p len=0x%x (%u) bytes flag=%d\n",
+	    (void *)st_rdm.addr, st_rdm.buf,
+	    (unsigned int)st_rdm.len, (unsigned int)st_rdm.len,
 	    st_rdm.flag);
 	if (ioctl(fd, IOCTL_RWMEMDRV_IOCGMEM, &st_rdm) == -1) {
 		perror("ioctl");
